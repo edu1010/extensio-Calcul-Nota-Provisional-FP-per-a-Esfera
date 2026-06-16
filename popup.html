@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="utf-8">
+<style>
+  body{width:300px;margin:0;font-family:'Segoe UI',Tahoma,sans-serif;color:#264653;}
+  header{background:#264653;color:#fff;padding:12px 14px;}
+  header h1{font-size:15px;margin:0;}
+  header p{font-size:11px;margin:4px 0 0;opacity:.85;}
+  .body{padding:14px;}
+  .toggle{display:flex;align-items:center;justify-content:space-between;
+    background:#e9f5f3;border:1px solid #cbd5d3;border-radius:6px;padding:10px 12px;
+    margin-bottom:12px;}
+  .toggle span{font-weight:600;font-size:13px;}
+  .switch{position:relative;width:46px;height:24px;}
+  .switch input{opacity:0;width:0;height:0;}
+  .slider{position:absolute;inset:0;background:#bbb;border-radius:24px;cursor:pointer;
+    transition:.2s;}
+  .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;top:3px;
+    background:#fff;border-radius:50%;transition:.2s;}
+  input:checked + .slider{background:#2a9d8f;}
+  input:checked + .slider:before{transform:translateX(22px);}
+  .formula{font-size:11px;background:#f7faf9;border:1px solid #e0e6e5;border-radius:6px;
+    padding:8px 10px;margin-bottom:8px;}
+  .formula b{color:#2a9d8f;}
+  .note{font-size:10.5px;color:#666;line-height:1.4;}
+</style>
+</head>
+<body>
+  <header>
+    <h1>📊 Nota Provisional FP</h1>
+    <p>Càlcul de la QMP a Esfer@ (0223 i 1664)</p>
+  </header>
+  <div class="body">
+    <div class="toggle">
+      <span>Mostrar el panell</span>
+      <label class="switch">
+        <input type="checkbox" id="chk" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="formula">
+      <b>0223 · Aplicacions Ofimàtiques</b><br>
+      0,05·RA1 + 0,15·RA2 + 0,15·RA3 + 0,15·RA4 + 0,10·RA5 + 0,10·RA6 + 0,10·RA7
+      + 0,05·RA8 + 0,05·RA9 + 0,10·EM
+    </div>
+    <div class="formula">
+      <b>1664 · Digitalització</b><br>
+      0,12·RA1 + 0,28·RA2 + 0,24·RA3 + 0,24·RA4 + 0,12·RA5
+    </div>
+
+    <p class="note">El panell apareix a la dreta de la pantalla d'avaluació.
+    Obre una fitxa d'alumne (Avaluació final per grup/alumne) i el càlcul es fa
+    automàticament a partir de les notes dels RAs. <b>NA</b> (No assolit) compta
+    com a 0. Revisa sempre el resultat abans d'aplicar-lo al camp.</p>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

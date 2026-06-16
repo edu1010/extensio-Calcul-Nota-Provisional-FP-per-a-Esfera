@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Càlcul Nota Provisional FP (0223 / 1664)",
+  "version": "1.0",
+  "description": "Calcula la qualificació provisional (QMP) dels mòduls 0223 Aplicacions Ofimàtiques i 1664 Digitalització a Esfer@, segons la mitjana ponderada dels RAs.",
+  "permissions": [ "storage" ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Càlcul Nota Provisional FP"
+  },
+  "content_scripts": [
+    {
+      "js": [ "content.js" ],
+      "matches": [
+        "https://bfgh.aplicacions.ensenyament.gencat.cat/bfgh/avaluacio/finalAvaluacioGrupAlumne*",
+        "https://bfgh.aplicacions.ensenyament.gencat.cat/bfgh/avaluacio/finalAvaluacioGrupMateria*"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
