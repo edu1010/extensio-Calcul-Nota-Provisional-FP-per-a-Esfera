@@ -28,6 +28,24 @@ QMP = 0,12·RA1 + 0,28·RA2 + 0,24·RA3 + 0,24·RA4 + 0,12·RA5
   valor al camp *Qualificació provisional*.
 - Es recalcula automàticament en canviar les notes o l'alumne.
 
+## Afegir fórmules d'altres assignatures
+
+A més dels dos mòduls de fàbrica, **qualsevol mòdul** que aparegui a la pantalla
+es pot configurar:
+
+- Els mòduls sense fórmula es mostren amb un editor per definir-la.
+- Els mòduls amb fórmula tenen un botó **✎** per editar-la.
+
+S'escriu com una expressió, amb coma o punt decimal i en qualsevol ordre:
+
+```
+QM = RA1*0,1 + RA2*0,2 + RA3*0,2 + RA4*0,2 + RA5*0,2 + EM*0,1
+```
+
+L'editor detecta els RAs presents, valida el format i mostra la suma de pesos
+(idealment 1). Les fórmules pròpies es desen a `chrome.storage`, tenen prioritat
+sobre les de fàbrica i es poden esborrar per tornar a l'estat original.
+
 ### Criteri de notes
 
 | Estat del RA | Tractament |

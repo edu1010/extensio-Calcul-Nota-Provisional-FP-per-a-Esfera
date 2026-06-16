@@ -11,7 +11,9 @@
      QMP = 0,12·QRA1 + 0,28·QRA2 + 0,24·QRA3 + 0,24·QRA4 + 0,12·QRA5
    ========================================================================== */
 
-const MODULS = {
+// Fórmules predefinides (de fàbrica). L'usuari en pot afegir/editar de qualsevol
+// altre mòdul des del panell; es desen a chrome.storage i tenen prioritat.
+const BUILTIN = {
   '0223': {
     nom: 'Aplicacions Ofimàtiques',
     ra: { 1: 0.05, 2: 0.15, 3: 0.15, 4: 0.15, 5: 0.10, 6: 0.10, 7: 0.10, 8: 0.05, 9: 0.05 },
@@ -27,8 +29,57 @@ const MODULS = {
 const PANEL_ID = 'calcul-nota-prov-panel';
 let actiu = true;
 let costat = 'dreta';            // 'dreta' | 'esquerra'
+let formules = {};               // BUILTIN + personalitzades (storage)
+let personalitzades = {};        // només les de l'usuari (storage)
+let editorsOberts = new Set();   // prefixos amb l'editor de fórmula desplegat
 let observer = null;
 let debounce = null;
+
+// Recombina les fórmules de fàbrica amb les personalitzades de l'usuari.
+function recombinarFormules() {
+  formules = Object.assign({}, BUILTIN, personalitzades);
+}
+
+/* --- Parseig de fórmules ----------------------------------------------- */
+
+// Converteix un text "QM = RA1*0,1 + RA2*0,2 + EM*0,1" en {ra:{...}, em:n}.
+// Accepta coma o punt decimal, l'ordre RA*pes o pes*RA, majúscules/minúscules.
+// Retorna null si no és vàlida.
+function parseFormula(str) {
+  if (!str) return null;
+  let s = String(str).toLowerCase();
+  if (s.includes('=')) s = s.slice(s.indexOf('=') + 1);   // treu "qm ="
+  s = s.replace(/,/g, '.').replace(/\s+/g, '');
+  if (!s) return null;
+  const termes = s.split('+').filter(Boolean);
+  const ra = {};
+  let em = 0, algun = false;
+  for (let t of termes) {
+    let tipus = null, idx = null;
+    const mRA = t.match(/ra(\d+)/);
+    if (mRA) { tipus = 'ra'; idx = parseInt(mRA[1], 10); t = t.replace(/ra\d+/, ''); }
+    else if (t.includes('em')) { tipus = 'em'; t = t.replace('em', ''); }
+    else return null;
+    t = t.replace(/\*/g, '');
+    const w = parseFloat(t);
+    if (isNaN(w)) return null;
+    if (tipus === 'ra') ra[idx] = w; else em = w;
+    algun = true;
+  }
+  return algun ? { ra, em } : null;
+}
+
+// Genera el text editable d'una fórmula a partir de la seva configuració.
+function formulaToStr(cfg) {
+  const parts = Object.keys(cfg.ra).map(Number).sort((a, b) => a - b)
+    .map(i => `RA${i}*${fmt(cfg.ra[i])}`);
+  if (cfg.em > 0) parts.push(`EM*${fmt(cfg.em)}`);
+  return 'QM = ' + parts.join(' + ');
+}
+
+function sumaPesos(cfg) {
+  return Object.values(cfg.ra).reduce((a, b) => a + b, 0) + (cfg.em || 0);
+}
 
 /* --- Utilitats --------------------------------------------------------- */
 
@@ -46,7 +97,9 @@ function fmt(n) {
   return n.toFixed(2).replace('.', ',');
 }
 
-// Recull tots els mòduls coneguts presents a la pàgina amb els seus RAs i EM.
+// Recull TOTS els mòduls presents a la pàgina amb els seus RAs i EM.
+// Els que tenen fórmula (de fàbrica o personalitzada) es calculen; la resta
+// es mostren amb l'opció de definir-ne una.
 function collectModules() {
   const rows = [...document.querySelectorAll('tr.alturallistat')];
   const modules = {};
@@ -56,14 +109,20 @@ function collectModules() {
     const codi = (r.cells[0]?.textContent || '').trim();
     if (/_\d+(RA|EM)$/.test(codi)) return;            // és un fill, no un mòdul
     const m = codi.match(/^(\d{4})_/);
-    if (!m || !MODULS[m[1]]) return;
+    if (!m) return;
+    const prefix = m[1];
+    const nomRaw = (r.cells[1]?.textContent || '').trim();
+    const nom = nomRaw.split(/[¬(]/)[0].trim() || codi;   // treu "¬(codi)"
     modules[codi] = {
       codi,
-      prefix: m[1],
-      cfg: MODULS[m[1]],
+      prefix,
+      nom,
+      cfg: formules[prefix] || null,
       provInput: r.querySelector('input[ng-model="contingut.qualificacioProv"]'),
       ras: {},
-      em: null
+      em: null,
+      raIdxs: [],
+      hasEM: false
     };
   });
 
@@ -77,10 +136,11 @@ function collectModules() {
     if (!mod) return;
     const idx = parseInt(m[2], 10);
     const sel = r.querySelector('select');
-    if (m[3] === 'RA') mod.ras[idx] = sel;
-    else mod.em = sel;
+    if (m[3] === 'RA') { mod.ras[idx] = sel; mod.raIdxs.push(idx); }
+    else { mod.em = sel; mod.hasEM = true; }
   });
 
+  Object.values(modules).forEach(mod => mod.raIdxs.sort((a, b) => a - b));
   return modules;
 }
 
@@ -164,25 +224,35 @@ function toast(msg) {
 function refresh() {
   if (!actiu) { eliminarPanell(); return; }
 
+  let panel = document.getElementById(PANEL_ID);
+
+  // No reconstruïm mentre l'usuari escriu dins del panell (p. ex. una fórmula).
+  if (panel && panel.contains(document.activeElement)) {
+    clearTimeout(debounce);
+    debounce = setTimeout(refresh, 600);
+    return;
+  }
+
   const modules = collectModules();
   const codis = Object.keys(modules);
 
-  let panel = document.getElementById(PANEL_ID);
   if (!panel) panel = crearPanell();
-
   const cos = panel.querySelector('#cnp-body');
 
   if (codis.length === 0) {
     cos.innerHTML = '<div style="padding:10px;color:#555;font-size:12px;">' +
-      'No es detecten els mòduls 0223 ni 1664 en aquesta pantalla.</div>';
+      'No es detecta cap mòdul en aquesta pantalla.</div>';
     return;
   }
 
   cos.innerHTML = '';
   codis.forEach(codi => {
     const mod = modules[codi];
-    const res = compute(mod);
-    cos.appendChild(targetaModul(mod, res));
+    if (mod.cfg && !editorsOberts.has(mod.prefix)) {
+      cos.appendChild(targetaModul(mod, compute(mod)));
+    } else {
+      cos.appendChild(targetaEditor(mod));
+    }
   });
 }
 
@@ -209,11 +279,13 @@ function targetaModul(mod, res) {
     : `<span class="cnp-badge cnp-warn">Falten: ${res.pendents.join(', ')}</span>`;
 
   const aplicarDisabled = (mod.provInput && !mod.provInput.disabled) ? '' : 'disabled';
+  const propi = !!personalitzades[mod.prefix];
 
   card.innerHTML = `
     <div class="cnp-card-head">
       <span class="cnp-codi">${mod.prefix}</span>
-      <span class="cnp-nom">${mod.cfg.nom}</span>
+      <span class="cnp-nom">${mod.cfg.nom || mod.nom}</span>
+      <span class="cnp-edit" title="Edita la fórmula">✎</span>
     </div>
     <table class="cnp-table">
       <thead><tr><th>RA</th><th>Pes</th><th>Nota</th><th>Pond.</th></tr></thead>
@@ -222,7 +294,7 @@ function targetaModul(mod, res) {
     <div class="cnp-result">
       <div class="cnp-qmp">
         <span class="cnp-qmp-num">${fmt(res.qmp)}</span>
-        <span class="cnp-qmp-lbl">QMP &nbsp;→&nbsp; nota <b>${res.arrodonit}</b></span>
+        <span class="cnp-qmp-lbl">QMP &nbsp;→&nbsp; nota <b>${res.arrodonit}</b>${propi ? ' · <i>fórmula pròpia</i>' : ''}</span>
       </div>
       ${completBadge}
     </div>
@@ -230,6 +302,95 @@ function targetaModul(mod, res) {
   `;
 
   card.querySelector('.cnp-apply').addEventListener('click', () => aplicar(mod, res.arrodonit));
+  card.querySelector('.cnp-edit').addEventListener('click', () => {
+    editorsOberts.add(mod.prefix);
+    refresh();
+  });
+  return card;
+}
+
+// Targeta per definir/editar la fórmula d'un mòdul.
+function targetaEditor(mod) {
+  const card = document.createElement('div');
+  card.className = 'cnp-card cnp-card-edit';
+
+  const existent = formules[mod.prefix];
+  const propi = !!personalitzades[mod.prefix];
+
+  // Suggeriment: fórmula existent o pesos iguals entre els RAs detectats.
+  let valorInicial;
+  if (existent) {
+    valorInicial = formulaToStr(existent);
+  } else if (mod.raIdxs.length) {
+    const w = Math.round((1 / mod.raIdxs.length) * 100) / 100;
+    valorInicial = 'QM = ' + mod.raIdxs.map(i => `RA${i}*${fmt(w)}`).join(' + ');
+  } else {
+    valorInicial = 'QM = RA1*0,5 + RA2*0,5';
+  }
+
+  const detectats = mod.raIdxs.length
+    ? 'RA detectats: ' + mod.raIdxs.map(i => 'RA' + i).join(', ') + (mod.hasEM ? ' + EM' : '')
+    : 'No s\'han detectat RAs en aquesta pantalla.';
+
+  card.innerHTML = `
+    <div class="cnp-card-head">
+      <span class="cnp-codi">${mod.prefix}</span>
+      <span class="cnp-nom">${mod.nom}</span>
+    </div>
+    <div class="cnp-edit-body">
+      <div class="cnp-hint">${detectats}</div>
+      <label class="cnp-lbl">Fórmula (ex.: <code>RA1*0,1 + RA2*0,2 + EM*0,1</code>)</label>
+      <textarea class="cnp-formula" rows="2" spellcheck="false">${valorInicial}</textarea>
+      <div class="cnp-edit-msg"></div>
+      <div class="cnp-edit-btns">
+        <button class="cnp-save">Desa</button>
+        ${propi ? '<button class="cnp-del" title="Torna a la de fàbrica o elimina">Esborra</button>' : ''}
+        <button class="cnp-cancel">Cancel·la</button>
+      </div>
+    </div>
+  `;
+
+  const ta = card.querySelector('.cnp-formula');
+  const msg = card.querySelector('.cnp-edit-msg');
+
+  ta.addEventListener('input', () => {
+    const p = parseFormula(ta.value);
+    if (!p) { msg.textContent = '⚠ Format no vàlid'; msg.className = 'cnp-edit-msg cnp-err'; }
+    else {
+      const cfg = { ra: p.ra, em: p.em };
+      msg.textContent = 'Suma de pesos: ' + fmt(sumaPesos(cfg)) +
+        (Math.abs(sumaPesos(cfg) - 1) > 0.001 ? ' (no suma 1)' : ' ✓');
+      msg.className = 'cnp-edit-msg' + (Math.abs(sumaPesos(cfg) - 1) > 0.001 ? ' cnp-warn-txt' : ' cnp-ok-txt');
+    }
+  });
+  ta.dispatchEvent(new Event('input'));
+
+  card.querySelector('.cnp-save').addEventListener('click', () => {
+    const p = parseFormula(ta.value);
+    if (!p) { msg.textContent = '⚠ No es pot desar: format no vàlid'; msg.className = 'cnp-edit-msg cnp-err'; return; }
+    personalitzades[mod.prefix] = { nom: mod.nom, ra: p.ra, em: p.em };
+    chrome.storage.local.set({ calculFormules: personalitzades });
+    recombinarFormules();
+    editorsOberts.delete(mod.prefix);
+    refresh();
+    toast('Fórmula desada per al mòdul ' + mod.prefix + '.');
+  });
+
+  const btnDel = card.querySelector('.cnp-del');
+  if (btnDel) btnDel.addEventListener('click', () => {
+    delete personalitzades[mod.prefix];
+    chrome.storage.local.set({ calculFormules: personalitzades });
+    recombinarFormules();
+    editorsOberts.delete(mod.prefix);
+    refresh();
+    toast('Fórmula pròpia eliminada del mòdul ' + mod.prefix + '.');
+  });
+
+  card.querySelector('.cnp-cancel').addEventListener('click', () => {
+    editorsOberts.delete(mod.prefix);
+    refresh();
+  });
+
   return card;
 }
 
@@ -325,10 +486,31 @@ function injectarCSS() {
       background:#eef3f3;}
     .cnp-card{border:1px solid #cbd5d3;border-radius:6px;margin-bottom:10px;
       background:#fff;overflow:hidden;}
-    .cnp-card-head{padding:6px 8px;background:#e9f5f3;border-bottom:1px solid #cbd5d3;}
-    .cnp-codi{display:inline-block;background:#2a9d8f;color:#fff;font-weight:bold;
-      font-size:11px;padding:1px 6px;border-radius:4px;margin-right:6px;}
-    .cnp-nom{font-size:12px;color:#264653;font-weight:600;}
+    .cnp-card-head{padding:6px 8px;background:#e9f5f3;border-bottom:1px solid #cbd5d3;
+      display:flex;align-items:center;gap:6px;}
+    .cnp-codi{background:#2a9d8f;color:#fff;font-weight:bold;font-size:11px;
+      padding:1px 6px;border-radius:4px;flex:none;}
+    .cnp-nom{font-size:12px;color:#264653;font-weight:600;flex:1;line-height:1.2;}
+    .cnp-edit{cursor:pointer;opacity:.6;font-size:13px;flex:none;}
+    .cnp-edit:hover{opacity:1;}
+    .cnp-card-edit{border-color:#e9a23b;}
+    .cnp-edit-body{padding:8px;}
+    .cnp-hint{font-size:10.5px;color:#666;margin-bottom:6px;}
+    .cnp-lbl{display:block;font-size:11px;color:#264653;margin-bottom:4px;}
+    .cnp-lbl code{background:#f0f3f3;padding:0 3px;border-radius:3px;font-size:10px;}
+    .cnp-formula{width:100%;box-sizing:border-box;font-family:Consolas,monospace;
+      font-size:12px;border:1px solid #cbd5d3;border-radius:5px;padding:5px;resize:vertical;}
+    .cnp-formula:focus{outline:none;border-color:#2a9d8f;}
+    .cnp-edit-msg{font-size:10.5px;margin:5px 0;min-height:13px;}
+    .cnp-edit-msg.cnp-err{color:#c0392b;font-weight:bold;}
+    .cnp-edit-msg.cnp-ok-txt{color:#155724;}
+    .cnp-edit-msg.cnp-warn-txt{color:#856404;}
+    .cnp-edit-btns{display:flex;gap:6px;}
+    .cnp-edit-btns button{flex:1;border:none;border-radius:5px;padding:6px;cursor:pointer;
+      font-size:11.5px;font-weight:bold;}
+    .cnp-save{background:#2a9d8f;color:#fff;}.cnp-save:hover{background:#21867a;}
+    .cnp-del{background:#e76f51;color:#fff;}.cnp-del:hover{background:#d35f43;}
+    .cnp-cancel{background:#e3e8e7;color:#444;}.cnp-cancel:hover{background:#d4dbda;}
     .cnp-table{width:100%;border-collapse:collapse;font-size:11px;}
     .cnp-table th{background:#f2f6f5;color:#555;font-weight:600;padding:3px 6px;
       border-bottom:1px solid #e0e6e5;text-align:center;}
@@ -368,9 +550,11 @@ function observar() {
   }, true);
 }
 
-chrome.storage.local.get({ calculActiu: true, calculCostat: 'dreta' }, data => {
+chrome.storage.local.get({ calculActiu: true, calculCostat: 'dreta', calculFormules: {} }, data => {
   actiu = data.calculActiu;
   costat = data.calculCostat;
+  personalitzades = data.calculFormules || {};
+  recombinarFormules();
   refresh();
   observar();
 });
@@ -385,5 +569,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
     costat = changes.calculCostat.newValue;
     const panel = document.getElementById(PANEL_ID);
     if (panel) aplicarCostat(panel, costat);
+  }
+  if (changes.calculFormules) {
+    personalitzades = changes.calculFormules.newValue || {};
+    recombinarFormules();
+    refresh();
   }
 });
